@@ -110,6 +110,10 @@ export class ContainerRejectService {
         validation_summary: rejectionReason,
       });
 
+      if (!rejectedContainer) {
+        throw new Error(`Failed to update container ${containerId} to VALIDATION_FAILED state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id=adminId, action='container_reject', container_id=containerId, status=TRANSITION,
       //      transition='UNDER_VALIDATION → VALIDATION_FAILED', attemptId=attemptId, timestamp=NOW()

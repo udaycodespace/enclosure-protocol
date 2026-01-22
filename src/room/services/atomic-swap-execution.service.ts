@@ -105,7 +105,15 @@ export class AtomicSwapExecutionService {
       // TODO: PaymentRepository.findByRoomId(roomId)
       // Fetch all payments for room; verify all payments.status = CONFIRMED
       const payments = await this.paymentRepository.findByRoomId(roomId);
+      if (!payments || payments.length === 0) {
+        throw new Error(
+          `Room ${roomId} has no payments. Swap cannot proceed without confirmed payments.`,
+        );
+      }
       for (const payment of payments) {
+        if (!payment) {
+          throw new Error(`Found null payment in room ${roomId}`);
+        }
         if (payment.status !== 'CONFIRMED') {
           throw new Error(
             `Payment ${payment.id} status is ${payment.status}, expected CONFIRMED`,
@@ -253,6 +261,10 @@ export class AtomicSwapExecutionService {
           swapped_at: new Date(),
         });
 
+        if (!swappedRoom) {
+          throw new Error(`Failed to update room ${roomId} to SWAPPED state`);
+        }
+
         // TODO: For EACH container: ContainerRepository.update(container.id, {
         //        state: 'TRANSFERRED',
         //        transferred_at: NOW(),
@@ -262,10 +274,13 @@ export class AtomicSwapExecutionService {
         // Expected behavior: atomic updates for both containers
 
         for (const container of containers) {
-          await this.containerRepository.update(container.id, {
+          const transferredContainer = await this.containerRepository.update(container.id, {
             state: 'TRANSFERRED',
             transferred_at: new Date(),
           });
+          if (!transferredContainer) {
+            throw new Error(`Failed to update container ${container.id} to TRANSFERRED state`);
+          }
         }
 
         // TODO: PaymentRepository.update(payment.id FOR EACH payment, {
@@ -275,9 +290,12 @@ export class AtomicSwapExecutionService {
         // Expected behavior: atomic updates
 
         for (const payment of payments) {
-          await this.paymentRepository.update(payment.id, {
+          const finalPayment = await this.paymentRepository.update(payment.id, {
             status: 'FINAL',
           });
+          if (!finalPayment) {
+            throw new Error(`Failed to update payment ${payment.id} to FINAL status`);
+          }
         }
 
         // TODO: AuditService.logTransition()

@@ -101,6 +101,10 @@ export class ContainerValidationStartService {
         state: 'UNDER_VALIDATION',
       });
 
+      if (!validatingContainer) {
+        throw new Error(`Failed to update container ${containerId} to UNDER_VALIDATION state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id='SYSTEM', action='container_validation_start', container_id=containerId, status=TRANSITION,
       //      transition='SEALED → UNDER_VALIDATION', attemptId=attemptId, timestamp=NOW()

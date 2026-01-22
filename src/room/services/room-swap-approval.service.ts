@@ -148,6 +148,10 @@ export class RoomSwapApprovalService {
         approved_at: new Date(),
       });
 
+      if (!approvedRoom) {
+        throw new Error(`Failed to update room ${roomId} to SWAP_READY state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id=adminId, action='room_swap_approval', room_id=roomId, status=TRANSITION,
       //      transition='UNDER_VALIDATION → SWAP_READY', attemptId=attemptId,

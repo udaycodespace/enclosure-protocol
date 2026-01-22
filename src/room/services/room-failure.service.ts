@@ -125,6 +125,10 @@ export class RoomFailureService {
         failed_at: new Date(),
       });
 
+      if (!failedRoom) {
+        throw new Error(`Failed to update room ${roomId} to FAILED state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id=actorId, action='room_failed', room_id=roomId, status=TRANSITION,
       //      transition='IN_PROGRESS → FAILED', attemptId=attemptId, failure_reason=reason, timestamp=NOW()

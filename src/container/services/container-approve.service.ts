@@ -107,6 +107,10 @@ export class ContainerApproveService {
         validation_summary: validationSummary,
       });
 
+      if (!approvedContainer) {
+        throw new Error(`Failed to update container ${containerId} to VALIDATED state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id=adminId, action='container_approve', container_id=containerId, status=TRANSITION,
       //      transition='UNDER_VALIDATION → VALIDATED', attemptId=attemptId, timestamp=NOW()

@@ -106,6 +106,10 @@ export class ContainerTransferService {
         transferred_at: new Date(),
       });
 
+      if (!transferredContainer) {
+        throw new Error(`Failed to update container ${containerId} to TRANSFERRED state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id='SYSTEM', action='container_transferred', container_id=containerId, status=TRANSITION,
       //      transition='VALIDATED → TRANSFERRED', attemptId=attemptId, timestamp=NOW()

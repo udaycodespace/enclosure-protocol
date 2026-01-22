@@ -115,6 +115,10 @@ export class ContainerSealService {
         state: 'SEALED',
       });
 
+      if (!sealedContainer) {
+        throw new Error(`Failed to update container ${containerId} to SEALED state`);
+      }
+
       // TODO: AuditService.logTransition()
       // Log: actor_id=actorId, action='container_seal', container_id=containerId, status=TRANSITION,
       //      transition='ARTIFACT_PLACED → SEALED', attemptId=attemptId, timestamp=NOW()
