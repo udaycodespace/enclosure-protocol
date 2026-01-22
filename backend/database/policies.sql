@@ -67,6 +67,14 @@ CREATE POLICY "Profiles_View_Own" ON public.profiles
 FOR SELECT
 USING (id = auth.uid() OR public.is_admin());
 
+-- Policy Name: Profiles_Deny_Update
+-- Role: ALL
+-- Operation: UPDATE
+-- FINAL HARDENING: Explicit deny to prevent role escalation via profile mutation
+CREATE POLICY "Profiles_Deny_Update" ON public.profiles
+FOR UPDATE
+USING (FALSE);
+
 -- ROOMS
 -- Policy Name: Rooms_View_Participants
 -- Role: ALL
@@ -153,6 +161,14 @@ USING (
   )
 );
 
+-- Policy Name: Artifacts_Deny_Update
+-- Role: ALL
+-- Operation: UPDATE
+-- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent state mutation
+CREATE POLICY "Artifacts_Deny_Update" ON public.artifacts
+FOR UPDATE
+USING (FALSE);
+
 -- PAYMENTS
 -- Policy Name: Payments_View_Own
 -- Role: ALL
@@ -170,6 +186,14 @@ USING (
 -- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent state mutation
 CREATE POLICY "Payments_Deny_Update" ON public.payments
 FOR UPDATE
+USING (FALSE);
+
+-- Policy Name: Payments_Deny_Delete
+-- Role: ALL
+-- Operation: DELETE
+-- FINAL HARDENING: Explicit deny for DELETE to enforce APPEND-ONLY immutability
+CREATE POLICY "Payments_Deny_Delete" ON public.payments
+FOR DELETE
 USING (FALSE);
 
 -- AUDIT LOGS
@@ -193,6 +217,14 @@ USING (
 -- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent audit log tampering
 CREATE POLICY "Audit_Deny_Update" ON public.audit_logs
 FOR UPDATE
+USING (FALSE);
+
+-- Policy Name: Audit_Deny_Delete
+-- Role: ALL
+-- Operation: DELETE
+-- FINAL HARDENING: Explicit deny for DELETE to enforce APPEND-ONLY immutability
+CREATE POLICY "Audit_Deny_Delete" ON public.audit_logs
+FOR DELETE
 USING (FALSE);
 
 -- SYSTEM AI (Assumption: Service Role Bypasses RLS)

@@ -166,3 +166,29 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_container_ownership
 BEFORE INSERT OR UPDATE ON public.containers
 FOR EACH ROW EXECUTE FUNCTION enforce_container_ownership();
+
+-- FINAL HARDENING: Append-Only Enforcement for audit_logs
+-- Audit logs are eternal facts. No deletion. No modification. Ever.
+CREATE OR REPLACE FUNCTION prevent_audit_logs_deletion()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_logs is APPEND-ONLY. Deletion is forbidden.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_audit_logs_no_delete
+BEFORE DELETE ON public.audit_logs
+FOR EACH ROW EXECUTE FUNCTION prevent_audit_logs_deletion();
+
+-- FINAL HARDENING: Append-Only Enforcement for payments
+-- Payments are permanent financial facts. No deletion. No modification. Ever.
+CREATE OR REPLACE FUNCTION prevent_payments_deletion()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'payments is APPEND-ONLY. Deletion is forbidden.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_payments_no_delete
+BEFORE DELETE ON public.payments
+FOR EACH ROW EXECUTE FUNCTION prevent_payments_deletion();
