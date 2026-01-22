@@ -1,0 +1,335 @@
+# ENCLOSURE — Product Requirements Document (PRD)
+
+> **ENCLOSURE** is a paid trust, transport, and validation platform that enables secure exchange of files, work, and money between two anonymous parties — only when mutually agreed conditions are met.
+
+This document defines **product scope, system behavior, security model, tech stack, and frontend/backend rules**.
+
+---
+
+## 1. Product Vision
+
+ENCLOSURE exists because:
+
+* Clients and freelancers do not trust each other
+* WhatsApp / email deals break down
+* Escrow platforms are slow, biased, or gameable
+* Free testing and scope abuse are common
+
+**ENCLOSURE replaces trust with rules.**
+
+> Nothing moves unless conditions are met.
+
+---
+
+## 2. Core Capabilities
+
+ENCLOSURE supports **two unified modes**:
+
+### Mode A — Mutual Direct Transfer (Known Parties)
+
+* A and B already know each other
+* Both declare:
+
+  * What they expect
+  * What they will provide
+* Both place artifacts into containers
+* AI/Admin checks **mutual match**
+* Atomic swap occurs **only if both sides match**
+
+ENCLOSURE acts as:
+
+* Secure transporter
+* Condition checker
+* Audit generator
+
+---
+
+### Mode B — Escrow + Deep Validation (Unknown Parties)
+
+* Client (A) submits:
+
+  * Requirements
+  * Money
+* Freelancer (B) accepts task
+* Freelancer submits work
+* AI/Admin validates against requirements
+* If valid:
+
+  * Files → Client
+  * Money → Freelancer
+
+ENCLOSURE acts as:
+
+* Judge
+* Validator
+* Escrow controller
+
+---
+
+## 3. Roles & Visibility
+
+### Client (A)
+
+* Can create rooms
+* Can upload requirements / funds
+* Can view:
+
+  * Containers
+  * Status
+  * History
+  * Reports
+* ❌ Cannot see freelancer identity
+
+### Freelancer (B)
+
+* Can join rooms via invite
+* Can upload work
+* Can view:
+
+  * Task scope
+  * Validation status
+  * History
+* ❌ Cannot see client identity
+
+### Admin (You) + AI
+
+* Full visibility
+* Can:
+
+  * Validate
+  * Override
+  * Resolve disputes
+
+---
+
+## 4. Rooms & Limits
+
+* Either client or freelancer can create a room
+* Free tier:
+
+  * Max 3 rooms
+* Paid tier:
+
+  * Unlimited rooms
+
+Rooms are invite-based and isolated.
+
+---
+
+## 5. Fees & Payments (INR via Razorpay)
+
+### Fee Structure
+
+1. **Placement / Transport Fee**
+
+   * 5% from Client
+   * 5% from Freelancer
+   * Charged when artifacts are placed
+   * Non-refundable unless platform fault
+
+2. **Validation Fee**
+
+   * 6%
+   * Charged when validation is requested
+   * Applies even if human validation is chosen
+
+3. **Success Release**
+
+   * Remaining amount released only after swap
+
+### Notes
+
+* ENCLOSURE never stores money
+* Only Razorpay payment IDs and states are stored
+* Webhooks are verified and idempotent
+
+---
+
+## 6. Authentication & Identity Security
+
+* Email-only signup
+* Allowed domains:
+
+  * gmail.com
+  * yahoo.com
+* OTP required on first signup
+* OTP required on risky actions (payments, new device)
+* Rate limits & session expiration enforced
+
+---
+
+## 7. Container Rules (Anti-Gravity Layer)
+
+* Containers are immutable after LOCK
+* No partial swaps
+* No retroactive scope changes
+* All actions are audit-logged
+* Validation summaries shown only at high level to users
+* Detailed diffs visible only to Admin/AI
+
+---
+
+## 8. Content & Safety Rules
+
+Blocked content:
+
+* Viruses / malware
+* Pornography / nudity
+* Illegal material
+
+All uploads:
+
+* Virus scanned
+* File-type validated
+* Hashed (SHA-256)
+
+---
+
+## 9. AI Validation (Gemini)
+
+* Gemini API used for:
+
+  * Scope consistency
+  * Source code checks
+  * Artifact completeness
+  * Risk scoring
+
+AI cannot:
+
+* Release funds
+* Modify states directly
+
+All AI outputs are logged and overridable.
+
+---
+
+## 10. Reports
+
+* Each room generates a downloadable PDF report
+* Includes:
+
+  * Timeline
+  * Files
+  * Hashes
+  * Validation result
+  * Final decision
+
+---
+
+## 11. Frontend UI/UX Rules (CRITICAL)
+
+### Design Philosophy — "Google Antigravity"
+
+Frontend must feel:
+
+* Heavy
+* Secure
+* Premium
+* Intentional
+
+Avoid all **AI-sloppy UI**.
+
+### Color Rules
+
+* ❌ No black
+* ❌ No blue
+* ❌ No purple
+* ❌ No pure white
+
+Preferred palettes:
+
+* Warm charcoal
+* Sandstone
+* Muted olive
+* Deep graphite green
+* Soft metallic accents
+
+### Typography
+
+* Primary: modern geometric sans
+* Secondary: expressive serif
+* Strong hierarchy
+
+### Layout Rules
+
+* Large spacing
+* Clear states
+* Minimal navigation
+* Single primary CTA per screen
+
+### Motion
+
+* Subtle
+* Slow
+* Purposeful
+* Never flashy
+
+---
+
+## 12. Backend Rules
+
+* All state transitions validated server-side
+* Zod schema validation on all inputs
+* No business logic in frontend
+* Strict API rate limits
+* Signed webhooks
+
+---
+
+## 13. Tech Stack
+
+### Frontend
+
+* React + TypeScript (Vite)
+* Tailwind CSS
+* Headless UI / Radix
+* Framer Motion
+
+### Backend
+
+* NestJS (Node + TypeScript)
+* Zod validation
+
+### Database
+
+* Supabase (PostgreSQL)
+* Row Level Security
+
+### Storage
+
+* Supabase Storage
+
+### Payments
+
+* Razorpay (INR)
+
+### AI
+
+* Gemini API
+
+### Hosting
+
+* Frontend: Vercel
+* Backend: Railway / Render
+
+---
+
+## 14. Non-Goals
+
+* No direct user chat
+* No identity reveal
+* No free validation
+* No internal wallets
+
+---
+
+## 15. Success Metrics
+
+* Zero unauthorized fund releases
+* Zero identity leaks
+* All swaps auditable
+* Abuse economically discouraged
+
+---
+
+END OF DOCUMENT
