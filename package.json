@@ -1,0 +1,35 @@
+{
+  "name": "enclosure",
+  "version": "1.0.0",
+  "description": "ENCLOSURE is a security-first exchange protocol that enables two anonymous parties  \r to exchange work, files, and money **only when strictly defined conditions are met**.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/udaycodespace/enclosure-protocol.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/udaycodespace/enclosure-protocol/issues"
+  },
+  "homepage": "https://github.com/udaycodespace/enclosure-protocol#readme",
+  "dependencies": {
+    "@nestjs/common": "^11.1.12",
+    "@nestjs/core": "^11.1.12",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
