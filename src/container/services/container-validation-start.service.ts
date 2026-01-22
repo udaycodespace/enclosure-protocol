@@ -3,6 +3,21 @@ import { AuditService } from '../../audit/audit.service';
 import { RoomRepository } from '../../repositories/room.repository';
 import { ContainerRepository } from '../../repositories/container.repository';
 
+/**
+ * Guard-required transition: SEALED → UNDER_VALIDATION (implicit system transition)
+ * 
+ * Preconditions enforced by system (not via HTTP guard):
+ *   - Triggered when second container is sealed (automatic by ContainerSealService)
+ *   - Both containers state = SEALED
+ *   - Room state = IN_PROGRESS
+ * 
+ * Side effects:
+ *   - Room state transition: IN_PROGRESS → UNDER_VALIDATION
+ *   - Grant Gemini read-only access to artifacts (via RLS policy)
+ *   - System_AI (Gemini) begins async analysis (fire-and-forget)
+ *   - Audit logged: VALIDATION_STARTED
+ */
+
 interface StartValidationInput {
   containerId: string;
   systemActorId?: string; // SYSTEM identity for audit logging

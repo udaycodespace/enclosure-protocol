@@ -4,6 +4,22 @@ import { NotificationService } from '../../notification/notification.service';
 import { RoomFailureService } from '../../room/services/room-failure.service';
 import { ContainerRepository } from '../../repositories/container.repository';
 
+/**
+ * Guard-required transition: UNDER_VALIDATION → VALIDATION_FAILED
+ * Preconditions enforced by ContainerRejectGuard:
+ *   - User role = ADMIN
+ *   - Fresh OTP (< 10 min) verified
+ *   - Container state = UNDER_VALIDATION
+ *   - Rejection reason provided (non-empty, max 1000 chars)
+ *   - No duplicate rejection attempts (5-min idempotency)
+ * 
+ * Side effects (after guard passes):
+ *   - Container state transition: UNDER_VALIDATION → VALIDATION_FAILED
+ *   - Rejection reason stored
+ *   - Triggers RoomFailureService saga (in separate transaction phase)
+ *   - Audit logged: REJECT_INITIATED
+ */
+
 interface RejectContainerInput {
   adminId: string;
   containerId: string;

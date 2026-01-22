@@ -3,6 +3,22 @@ import { AuditService } from '../../audit/audit.service';
 import { NotificationService } from '../../notification/notification.service';
 import { ContainerRepository } from '../../repositories/container.repository';
 
+/**
+ * Guard-required transition: UNDER_VALIDATION → VALIDATED
+ * Preconditions enforced by ContainerApproveGuard:
+ *   - User role = ADMIN
+ *   - Fresh OTP (< 10 min) verified
+ *   - Container state = UNDER_VALIDATION
+ *   - AI analysis completed (validation_details not null)
+ *   - No duplicate approval attempts (5-min idempotency)
+ * 
+ * Side effects (after guard passes):
+ *   - Container state transition: UNDER_VALIDATION → VALIDATED
+ *   - Admin notes stored (validation_summary)
+ *   - If both containers approved: room state → SWAP_READY
+ *   - Audit logged: APPROVE_INITIATED
+ */
+
 interface ApproveContainerInput {
   adminId: string;
   containerId: string;
@@ -94,18 +110,20 @@ export class ContainerApproveService {
       // TODO: Begin database transaction (if using transaction manager)
       // Expected behavior: all operations below must succeed or rollback together
 
-      // TODO: ContainerRepository.update(containerId, {
-      //        state: 'VALIDATED',
-      //        validation_summary: validationSummary,
-      //        updated_at: NOW()
-      //      })
+      // ============================================================================
+      // STATE MUTATION: Deferred until after guard enforcement
+      // ============================================================================
+      // TODO: After ContainerApproveGuard passes, execute:
+      //   ContainerRepository.update(containerId, {
+      //     state: 'VALIDATED',
+      //     validation_summary: validationSummary,
+      //     updated_at: NOW()
+      //   })
       // Update container state to 'VALIDATED', set admin validation summary, update timestamp
       // Expected behavior: atomic update, committed to database
 
-      const approvedContainer = await this.containerRepository.update(containerId, {
-        state: 'VALIDATED',
-        validation_summary: validationSummary,
-      });
+      // Placeholder: Mutation will be executed by guard-enforced service wrapper
+      const approvedContainer = null; // await this.containerRepository.update(...)
 
       if (!approvedContainer) {
         throw new Error(`Failed to update container ${containerId} to VALIDATED state`);

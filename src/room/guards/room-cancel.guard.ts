@@ -1,24 +1,21 @@
 /**
- * RoomFailureGuard
- * Protects: RoomFailureService (IN_PROGRESS/UNDER_VALIDATION → FAILED)
+ * RoomCancelGuard
+ * Protects: RoomCancelService (ANY state → CANCELLED)
  * 
- * Spec Reference: BACKEND_GUARD_SPECIFICATION.md - TRANSITION: Room Failure
+ * Spec Reference: BACKEND_GUARD_SPECIFICATION.md - TRANSITION 10
  * Preconditions to enforce:
  *   - Caller authenticated (JWT valid)
- *   - User is room participant or admin
- *   - Room state ∈ {IN_PROGRESS, UNDER_VALIDATION}
- *   - Failure reason provided (non-empty, max 500 chars)
+ *   - User is room participant
+ *   - Room not in forbidden cancel states (SWAPPED, FAILED, UNDER_VALIDATION, SWAP_READY, EXPIRED)
  *   - No active swap in progress
- *   - No rate limit exceeded
+ *   - Cancellation reason provided (optional, max 500 chars)
  */
 
-import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
-import { AuditService } from '../../audit/audit.service';
+import { Injectable } from '@nestjs/common';
+import { CanActivate, ExecutionContext } from '@nestjs/common';
 
 @Injectable()
-export class RoomFailureGuard implements CanActivate {
-  constructor(private readonly auditService: AuditService) {}
-
+export class RoomCancelGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
@@ -42,9 +39,9 @@ export class RoomFailureGuard implements CanActivate {
       // ========================================================================
       // 2. ROLE / ACTOR AUTHORIZATION
       // ========================================================================
-      // TODO: Verify caller is room participant OR admin
-      // - Query repository (READ ONLY): verify user is room owner, invited user, OR admin
-      // - throw ForbiddenException if not authorized
+      // TODO: Verify caller is room participant
+      // - Query repository (READ ONLY): verify user is in room (owner_id OR invited_user_id)
+      // - throw ForbiddenException if not a participant
 
       // ========================================================================
       // 3. STATE PRECONDITION CHECKS
@@ -53,23 +50,24 @@ export class RoomFailureGuard implements CanActivate {
       // - Query repository (READ ONLY): find room by input.room_id
       // - throw NotFoundException if not found
 
-      // TODO: Verify room state ∈ {IN_PROGRESS, UNDER_VALIDATION}
-      // - Check: room.state ∈ [IN_PROGRESS, UNDER_VALIDATION]
-      // - throw ConflictException if room in wrong state
+      // TODO: Verify room state is NOT in forbidden cancel states
+      // - Forbidden states: SWAPPED, FAILED, UNDER_VALIDATION, SWAP_READY, EXPIRED
+      // - Check: room.state ∉ [SWAPPED, FAILED, UNDER_VALIDATION, SWAP_READY, EXPIRED]
+      // - throw ConflictException if room in forbidden state
 
       // TODO: Verify no active swap in progress
       // - Check: room.swap_executed != true AND room.state != SWAPPED
       // - throw ConflictException if swap in progress
 
-      // TODO: Verify failure reason provided and valid
-      // - Check: input.reason is non-empty string
-      // - Check: length >= 10 AND length <= 500 characters
-      // - throw BadRequestException if invalid
+      // TODO: Verify cancellation reason format (if provided)
+      // - if input.cancellation_reason provided:
+      //   - Check: length <= 500 characters
+      //   - throw BadRequestException if exceeds limit
 
       // ========================================================================
       // 4. SESSION FRESHNESS VERIFICATION
       // ========================================================================
-      // TODO: Verify session freshness < 5 minutes
+      // TODO: Verify session freshness < 5 minutes (for cancellation)
       // - Check req.user.session_started_at
       // - Calculate: NOW() - session_started_at < 5 minutes
       // - throw UnauthorizedException('Session expired') if too old
@@ -77,30 +75,30 @@ export class RoomFailureGuard implements CanActivate {
       // ========================================================================
       // 5. OTP VERIFICATION
       // ========================================================================
-      // TODO: Room failure may require OTP for admin-initiated failure
-      // - if caller is admin:
+      // TODO: Room cancellation may require OTP (optional based on state)
+      // - if room state in [LOCKED, IN_PROGRESS]:
       //   - Require fresh OTP (< 10 min)
-      // - else if caller is participant:
-      //   - OTP optional
+      // - else:
+      //   - Skip OTP for early cancellations
 
       // ========================================================================
       // 6. RATE LIMITING HOOK
       // ========================================================================
-      // TODO: Check rate limit: max 10 failure initiations per user per hour
-      // - Key: `room_failure:{user_id}:bucket_hourly`
-      // - Query audit log: count failure attempts by user
-      // - if count >= 10, throw TooManyRequestsException
+      // TODO: Check rate limit: max 5 cancel attempts per user per hour
+      // - Key: `room_cancel:{user_id}:bucket_hourly`
+      // - Query audit log: count cancel attempts
+      // - if count >= 5, throw TooManyRequestsException
 
       // ========================================================================
       // 7. IDEMPOTENCY KEY VERIFICATION
       // ========================================================================
       // TODO: Extract idempotency key from request header
       // - Header: X-Idempotency-Key (optional)
-      // - Key: `failure:{room_id}:{user_id}:bucket_5min`
+      // - Key: `cancel:{room_id}:{user_id}:bucket_5min`
 
       return true;
     } catch (error) {
-      console.error(`RoomFailureGuard failed: ${error.message}`);
+      console.error(`RoomCancelGuard failed: ${error.message}`);
       return false;
     }
   }

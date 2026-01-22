@@ -1,9 +1,25 @@
 /**
  * RoomFailureService
- * Transitions room: IN_PROGRESS → FAILED
+ * Transitions room: IN_PROGRESS → FAILED (or UNDER_VALIDATION → FAILED)
  * Triggered by admin, participant, or system request.
  * Artifacts not released, containers locked.
  * Both containers are invalidated via saga coordination.
+ * 
+ * Guard-required transition: IN_PROGRESS/UNDER_VALIDATION → FAILED
+ * Preconditions enforced by RoomFailureGuard:
+ *   - User is room participant or admin
+ *   - Room state ∈ {IN_PROGRESS, UNDER_VALIDATION}
+ *   - Failure reason provided (non-empty, max 500 chars)
+ *   - No active swap in progress
+ * 
+ * Side effects (2-phase saga, after guard passes):
+ *   Phase 1: Room state transition: IN_PROGRESS/UNDER_VALIDATION → FAILED
+ *   Phase 2: Saga coordination - invalidate both containers (via ContainerRejectService)
+ *   - Containers state → VALIDATION_FAILED
+ *   - Failure reason propagated to containers
+ *   - Both parties notified
+ *   - Audit logged: FAILURE_INITIATED
+ * 
  * Transition: IN_PROGRESS → FAILED
  */
 

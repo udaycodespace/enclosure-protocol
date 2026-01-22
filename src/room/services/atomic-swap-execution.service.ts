@@ -5,6 +5,22 @@
  * Moves artifacts from containers to owners, releases final payment.
  * 4-step saga: PRECONDITIONS → STORAGE MOVE → PAYMENT RELEASE → DB COMMIT
  * Failure-safe, replay-safe, with compensating actions.
+ * 
+ * Guard-required transition: SWAP_READY → SWAPPED (System only)
+ * Preconditions enforced by AtomicSwapExecutionGuard:
+ *   - System context (SYSTEM role only)
+ *   - Room state = SWAP_READY
+ *   - Both containers state = VALIDATED
+ *   - All payments status = CONFIRMED
+ *   - Artifacts verified in storage
+ *   - No swap already executed (idempotency: swap_executed flag)
+ * 
+ * 4-step Saga (after guard passes):
+ *   Step 1: Atomic precondition re-check
+ *   Step 2: Artifact move to owner storage (external: StorageService)
+ *   Step 3: Payment release to Razorpay transfer order (external: PaymentService)
+ *   Step 4: Atomic DB commit (room → SWAPPED, containers → TRANSFERRED, payments → FINAL)
+ * 
  * Transition: SWAP_READY → SWAPPED
  */
 

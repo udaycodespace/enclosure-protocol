@@ -1,3 +1,26 @@
+/**
+ * ArtifactCreateService
+ * Transitions container: EMPTY/ARTIFACT_PLACED → ARTIFACT_PLACED
+ * Handles artifact upload to container (file stored externally, metadata in DB)
+ * 
+ * Guard-required transition: ARTIFACT_PLACED
+ * Preconditions enforced by ArtifactCreateGuard:
+ *   - User is container owner
+ *   - Container state is EMPTY or ARTIFACT_PLACED
+ *   - Container not sealed
+ *   - Artifact file size < 100MB
+ *   - File type is whitelisted (no executables, scripts)
+ *   - Artifact count < max allowed per container
+ *   - Storage space available
+ * 
+ * Side effects (after guard passes):
+ *   - File uploaded to storage (StorageService)
+ *   - Artifact metadata record created in DB (file_hash, size, mime_type)
+ *   - Container state remains ARTIFACT_PLACED (or transitions to ARTIFACT_PLACED if EMPTY)
+ *   - Async: VirusScanService triggered for virus scanning
+ *   - Audit logged: ARTIFACT_CREATED
+ */
+
 import { Injectable } from '@nestjs/common';
 import { StorageService } from '../../storage/storage.service';
 import { AuditService } from '../../audit/audit.service';

@@ -1,24 +1,22 @@
 /**
- * RoomFailureGuard
- * Protects: RoomFailureService (IN_PROGRESS/UNDER_VALIDATION → FAILED)
+ * ContainerRejectGuard
+ * Protects: ContainerRejectService (UNDER_VALIDATION → VALIDATION_FAILED)
  * 
- * Spec Reference: BACKEND_GUARD_SPECIFICATION.md - TRANSITION: Room Failure
+ * Spec Reference: BACKEND_GUARD_SPECIFICATION.md - TRANSITION 8
  * Preconditions to enforce:
  *   - Caller authenticated (JWT valid)
- *   - User is room participant or admin
- *   - Room state ∈ {IN_PROGRESS, UNDER_VALIDATION}
- *   - Failure reason provided (non-empty, max 500 chars)
- *   - No active swap in progress
- *   - No rate limit exceeded
+ *   - User role = ADMIN
+ *   - Fresh OTP verified (< 10 min)
+ *   - Container state = UNDER_VALIDATION
+ *   - Rejection reason provided (non-empty, max 1000 chars)
+ *   - No duplicate rejection attempts (5-min idempotency)
  */
 
-import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
-import { AuditService } from '../../audit/audit.service';
+import { Injectable } from '@nestjs/common';
+import { CanActivate, ExecutionContext } from '@nestjs/common';
 
 @Injectable()
-export class RoomFailureGuard implements CanActivate {
-  constructor(private readonly auditService: AuditService) {}
-
+export class ContainerRejectGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
@@ -37,70 +35,68 @@ export class RoomFailureGuard implements CanActivate {
         return false;
       }
 
-      const userId = user.sub;
+      const adminId = user.sub;
 
       // ========================================================================
-      // 2. ROLE / ACTOR AUTHORIZATION
+      // 2. ROLE / ACTOR AUTHORIZATION (ADMIN ONLY)
       // ========================================================================
-      // TODO: Verify caller is room participant OR admin
-      // - Query repository (READ ONLY): verify user is room owner, invited user, OR admin
-      // - throw ForbiddenException if not authorized
+      // TODO: Verify caller is ADMIN
+      // - Check: req.user.role == 'ADMIN'
+      // - throw ForbiddenException if not ADMIN
+
+      const userRole = user.role;
+      if (userRole !== 'ADMIN') {
+        return false;
+      }
 
       // ========================================================================
       // 3. STATE PRECONDITION CHECKS
       // ========================================================================
-      // TODO: Verify room exists
-      // - Query repository (READ ONLY): find room by input.room_id
+      // TODO: Verify container exists and state = UNDER_VALIDATION
+      // - Query repository (READ ONLY): find container by input.container_id
       // - throw NotFoundException if not found
+      // - throw ConflictException if state != UNDER_VALIDATION
 
-      // TODO: Verify room state ∈ {IN_PROGRESS, UNDER_VALIDATION}
-      // - Check: room.state ∈ [IN_PROGRESS, UNDER_VALIDATION]
-      // - throw ConflictException if room in wrong state
-
-      // TODO: Verify no active swap in progress
-      // - Check: room.swap_executed != true AND room.state != SWAPPED
-      // - throw ConflictException if swap in progress
-
-      // TODO: Verify failure reason provided and valid
-      // - Check: input.reason is non-empty string
-      // - Check: length >= 10 AND length <= 500 characters
+      // TODO: Verify rejection reason provided and valid
+      // - Check: input.rejection_reason is non-empty string
+      // - Check: length >= 10 AND length <= 1000 characters
       // - throw BadRequestException if invalid
 
       // ========================================================================
       // 4. SESSION FRESHNESS VERIFICATION
       // ========================================================================
-      // TODO: Verify session freshness < 5 minutes
+      // TODO: Verify session freshness < 5 minutes (admin sensitive operation)
       // - Check req.user.session_started_at
       // - Calculate: NOW() - session_started_at < 5 minutes
       // - throw UnauthorizedException('Session expired') if too old
 
       // ========================================================================
-      // 5. OTP VERIFICATION
+      // 5. OTP VERIFICATION (CRITICAL FOR ADMIN)
       // ========================================================================
-      // TODO: Room failure may require OTP for admin-initiated failure
-      // - if caller is admin:
-      //   - Require fresh OTP (< 10 min)
-      // - else if caller is participant:
-      //   - OTP optional
+      // TODO: Verify fresh OTP provided and valid (< 10 min)
+      // - Extract input.otp (6-digit numeric string)
+      // - Query repository (READ ONLY): find OTP record by admin_id
+      // - Verify: otp matches AND otp.created_at > NOW() - 10 minutes
+      // - throw UnauthorizedException if OTP missing/invalid/expired
 
       // ========================================================================
       // 6. RATE LIMITING HOOK
       // ========================================================================
-      // TODO: Check rate limit: max 10 failure initiations per user per hour
-      // - Key: `room_failure:{user_id}:bucket_hourly`
-      // - Query audit log: count failure attempts by user
-      // - if count >= 10, throw TooManyRequestsException
+      // TODO: Check rate limit: max 20 rejections per admin per hour
+      // - Key: `container_reject:{admin_id}:bucket_hourly`
+      // - Query audit log: count reject attempts by admin
+      // - if count >= 20, throw TooManyRequestsException
 
       // ========================================================================
       // 7. IDEMPOTENCY KEY VERIFICATION
       // ========================================================================
       // TODO: Extract idempotency key from request header
       // - Header: X-Idempotency-Key (optional)
-      // - Key: `failure:{room_id}:{user_id}:bucket_5min`
+      // - Key: `reject:{container_id}:{admin_id}:bucket_5min`
 
       return true;
     } catch (error) {
-      console.error(`RoomFailureGuard failed: ${error.message}`);
+      console.error(`ContainerRejectGuard failed: ${error.message}`);
       return false;
     }
   }

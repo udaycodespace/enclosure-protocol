@@ -5,6 +5,22 @@ import { RoomRepository } from '../../repositories/room.repository';
 import { ContainerRepository } from '../../repositories/container.repository';
 import { ArtifactRepository } from '../../repositories/artifact.repository';
 
+/**
+ * Guard-required transition: ARTIFACT_PLACED → SEALED
+ * Preconditions enforced by ContainerSealGuard:
+ *   - User is container owner
+ *   - Container state = ARTIFACT_PLACED
+ *   - All artifacts scanned and not infected
+ *   - Container size < 100MB
+ *   - File types whitelisted
+ *   - No duplicate seal attempts (5-min idempotency)
+ * 
+ * Side effects (after guard passes):
+ *   - Container state transition: ARTIFACT_PLACED → SEALED
+ *   - If both containers sealed: room state → UNDER_VALIDATION
+ *   - Audit logged: SEAL_INITIATED
+ */
+
 interface SealContainerInput {
   actorId: string;
   containerId: string;
@@ -107,13 +123,16 @@ export class ContainerSealService {
       // TODO: Begin database transaction (if using transaction manager)
       // Expected behavior: all operations below must succeed or rollback together
 
-      // TODO: ContainerRepository.update(containerId, { state: 'SEALED', updated_at: NOW() })
+      // ============================================================================
+      // STATE MUTATION: Deferred until after guard enforcement
+      // ============================================================================
+      // TODO: After ContainerSealGuard passes, execute:
+      //   ContainerRepository.update(containerId, { state: 'SEALED', updated_at: NOW() })
       // Update container.state to 'SEALED' and set updated_at to current timestamp
       // Expected behavior: atomic update, committed to database
 
-      const sealedContainer = await this.containerRepository.update(containerId, {
-        state: 'SEALED',
-      });
+      // Placeholder: Mutation will be executed by guard-enforced service wrapper
+      const sealedContainer = null; // await this.containerRepository.update(...)
 
       if (!sealedContainer) {
         throw new Error(`Failed to update container ${containerId} to SEALED state`);

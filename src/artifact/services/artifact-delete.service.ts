@@ -1,3 +1,25 @@
+/**
+ * ArtifactDeleteService
+ * Transitions container: ARTIFACT_PLACED → ARTIFACT_PLACED or EMPTY
+ * Removes artifact from container (pre-seal deletion only)
+ * 
+ * Guard-required transition: ARTIFACT_DELETED (implicit state: last artifact deleted → EMPTY)
+ * Preconditions enforced by ArtifactDeleteGuard:
+ *   - User is artifact owner
+ *   - Container state ∈ {EMPTY, ARTIFACT_PLACED}
+ *   - Container not sealed
+ *   - Container not under validation
+ *   - Artifact exists and belongs to container
+ * 
+ * Side effects (after guard passes):
+ *   - Artifact record deleted from DB (atomic transaction)
+ *   - If last artifact deleted: container remains ARTIFACT_PLACED (or → EMPTY semantically)
+ *   - Async: StorageService deletes file from storage (fire-and-forget, orphaned files acceptable)
+ *   - Audit logged: ARTIFACT_DELETED
+ * 
+ * Idempotency enforced via artifact_id + 5-min bucket key
+ */
+
 import { Injectable } from '@nestjs/common';
 import { StorageService } from '../../storage/storage.service';
 import { AuditService } from '../../audit/audit.service';
