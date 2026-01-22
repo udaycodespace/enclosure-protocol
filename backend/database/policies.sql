@@ -13,18 +13,19 @@ ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 -- 1. HELPER FUNCTIONS (SECURITY DEFINER)
 
 -- Function: Check if user is Admin
+-- SECURITY FIX 1: Admin detection now uses JWT role, not user-mutable profile.role
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN AS $$
 BEGIN
-  RETURN EXISTS (
-    SELECT 1 FROM public.profiles
-    WHERE id = auth.uid() AND role = 'ADMIN'
-  );
+  -- Check JWT claim for admin role (Supabase auth context)
+  -- Prevents privilege escalation via profile manipulation
+  RETURN auth.jwt() ->> 'role' = 'admin';
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Function: Check if artifact is visible (Bypassing Container Secrecy)
 -- Logic: Visible IF (Container VALIDATED/TRANSFERRED) AND (User is Room Participant)
+-- SECURITY FIX 2: Added null guard and locked search_path to prevent data leakage
 CREATE OR REPLACE FUNCTION public.can_view_artifact(target_container_id UUID)
 RETURNS BOOLEAN AS $$
 DECLARE
@@ -33,6 +34,11 @@ DECLARE
   v_client_id UUID;
   v_freelancer_id UUID;
 BEGIN
+  -- SECURITY FIX 2: Early null check to prevent misuse
+  IF auth.uid() IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
   -- Fetch container metadata (As Definer)
   SELECT state, room_id INTO v_state, v_room_id
   FROM public.containers WHERE id = target_container_id;
@@ -48,7 +54,8 @@ BEGIN
 
   RETURN (auth.uid() = v_client_id OR auth.uid() = v_freelancer_id OR public.is_admin());
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public;
 
 -- 2. POLICIES
 
@@ -73,6 +80,14 @@ USING (
   public.is_admin()
 );
 
+-- Policy Name: Rooms_Deny_Update
+-- Role: ALL
+-- Operation: UPDATE
+-- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent state mutation
+CREATE POLICY "Rooms_Deny_Update" ON public.rooms
+FOR UPDATE
+USING (FALSE);
+
 -- CONTAINERS
 -- Policy Name: Containers_View_Owner_Strict
 -- Role: ALL (Owner Only)
@@ -83,6 +98,14 @@ USING (
   owner_id = auth.uid() OR 
   public.is_admin()
 );
+
+-- Policy Name: Containers_Deny_Update
+-- Role: ALL
+-- Operation: UPDATE
+-- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent state mutation
+CREATE POLICY "Containers_Deny_Update" ON public.containers
+FOR UPDATE
+USING (FALSE);
 
 -- ARTIFACTS
 -- Policy Name: Artifacts_View_Validated
@@ -104,6 +127,7 @@ USING (
 -- Policy Name: Artifacts_Insert_Placed
 -- Role: ALL
 -- Operation: INSERT
+-- SECURITY FIX 4: Allow INSERT when container is EMPTY (first upload) or ARTIFACT_PLACED
 CREATE POLICY "Artifacts_Insert_Placed" ON public.artifacts
 FOR INSERT
 WITH CHECK (
@@ -111,7 +135,7 @@ WITH CHECK (
     SELECT 1 FROM public.containers
     WHERE id = container_id 
     AND owner_id = auth.uid()
-    AND state = 'ARTIFACT_PLACED'
+    AND state IN ('EMPTY', 'ARTIFACT_PLACED')
   )
 );
 
@@ -125,7 +149,7 @@ USING (
     SELECT 1 FROM public.containers
     WHERE id = container_id 
     AND owner_id = auth.uid()
-    AND state = 'ARTIFACT_PLACED'
+    AND state IN ('EMPTY', 'ARTIFACT_PLACED')
   )
 );
 
@@ -139,6 +163,14 @@ USING (
   payer_id = auth.uid() OR
   public.is_admin()
 );
+
+-- Policy Name: Payments_Deny_Update
+-- Role: ALL
+-- Operation: UPDATE
+-- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent state mutation
+CREATE POLICY "Payments_Deny_Update" ON public.payments
+FOR UPDATE
+USING (FALSE);
 
 -- AUDIT LOGS
 -- Policy Name: Audit_View_Room_Participants
@@ -154,6 +186,14 @@ USING (
   )
   OR public.is_admin()
 );
+
+-- Policy Name: Audit_Deny_Update
+-- Role: ALL
+-- Operation: UPDATE
+-- SECURITY FIX 3: Explicit deny for direct UPDATE to prevent audit log tampering
+CREATE POLICY "Audit_Deny_Update" ON public.audit_logs
+FOR UPDATE
+USING (FALSE);
 
 -- SYSTEM AI (Assumption: Service Role Bypasses RLS)
 -- Explicit Deny for modification if System AI uses a specific DB role not service_role.
