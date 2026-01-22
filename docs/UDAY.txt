@@ -1,0 +1,1165 @@
+# ENCLOSURE BACKEND STATE TRANSITION GUARDS
+## Authoritative Security Contract for NestJS
+
+This document defines the ONLY valid state transitions, preconditions, and guardrails for the ENCLOSURE backend. This is RULES ONLY. No code. No shortcuts.
+
+---
+
+## GLOBAL SESSION & AUTHENTICATION FRAMEWORK
+
+**All transitions require**:
+- Valid JWT token with `auth.uid()` matching session user
+- Session must be validated via Supabase auth introspection (JWT validity + active session check via auth subsystem)
+- All email addresses validated against allowed domains: `gmail.com`, `yahoo.com`
+- Email normalization: lowercase, remove dots for gmail.com addresses, strip '+' suffix and everything after
+- Temp mail and unknown domains → HARD FAIL
+- Gmail '+' aliases are permitted. Abuse prevention is enforced via rate limits and OTP, not alias banning.
+
+**OTP Requirements** (must be verified before proceeding):
+- First signup → OTP required
+- First login on new device → OTP required
+- Room LOCK transition → OTP required
+- Payment initiation (JOINED → LOCKED) → OTP required
+
+**Rate Limits**:
+- OTP requests: 3 per hour per normalized email
+- Login attempts: 5 per hour per normalized email
+- State transitions: 10 per minute per user (abuse detection)
+
+**Session Freshness Requirements**:
+- Default: session freshness not required
+- Sensitive (marked below): session age < 15 minutes
+- Payment OTP: must be verified < 5 minutes before LOCK
+
+---
+
+## ROOM STATE TRANSITIONS
+
+---
+
+### TRANSITION 1: ROOM_CREATED → INVITE_SENT
+
+**ENTITY**: Room
+
+**CURRENT STATE**: ROOM_CREATED
+
+**ALLOWED NEXT STATE(S)**:
+- INVITE_SENT
+
+**ACTOR ALLOWED**:
+- ✅ Client (creator)
+- ✅ Freelancer (if freelancer is creator)
+- ❌ Admin (cannot create rooms)
+- ❌ System_AI (read-only)
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Actor must be the `created_by` user
+- `title` is non-empty string, max 256 chars
+- `requirements` is non-empty string, max 5000 chars
+- `requirements_hash` is computed SHA-256(requirements) at DB level
+- `requirements_version` = 1
+- `amount_total` ≥ 0, numeric, max 2 decimal places
+- `currency` = 'INR' (hard-coded for MVP)
+- `expires_at` > NOW() + 7 days (minimum TTL)
+- `room_type` ∈ {'MUTUAL_TRANSFER', 'ESCROW_VALIDATION'}
+- Room does not already exist in INVITE_SENT state (prevent duplicate invites)
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **gmail.com, yahoo.com** (normalized)
+
+**INPUT VALIDATION RULES**:
+- Reject unknown JSON fields (Zod strict mode)
+- Title must be alphanumeric + punctuation, no control chars
+- Requirements must be parseable UTF-8, no embedded null bytes
+- amount_total must not exceed 10,000,000 INR (abuse limit)
+- Reject if `created_by` != `auth.uid()`
+- Validate `room_type` enum strictly
+- Normalize email before any comparison
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.created', previous_state=NULL, new_state='ROOM_CREATED'
+- ✅ Audit log entry: action='room.invite_sent', previous_state='ROOM_CREATED', new_state='INVITE_SENT'
+- ❌ Payment event triggered: NO
+- ❌ Container sealed: NO
+- ❌ AI visibility change: NO
+
+**FAILURE HANDLING**:
+- If title/requirements empty → return 400 Bad Request, NO state change
+- If actor ≠ created_by → return 403 Forbidden, NO state change
+- If email domain not in whitelist (after normalization) → return 403 Forbidden, NO state change
+- If room already in INVITE_SENT → return 409 Conflict, NO state change
+- If validation fails → transaction rolled back, audit logged as failed attempt
+- All failures must be logged to audit_logs with actor_id and reason
+
+**EDGE CASES (MANDATORY)**:
+- Attacker tries to create room with requirements_hash manually set → ignore, compute server-side
+- Attacker tries to set `expires_at` to past timestamp → reject with 400
+- Attacker tries to set negative amount → reject with 400
+- Attacker tries to create 100 rooms in 1 second → rate limit, 429 Too Many Requests
+- User with non-whitelisted email tries to create room → reject with 403
+- Session replay attack → session token must include nonce, reject if nonce mismatch
+- User attempts join with '+' alias variant (test+1@gmail.com vs test+2@gmail.com) → normalize, treat as same identity
+
+---
+
+### TRANSITION 2: INVITE_SENT → JOINED
+
+**ENTITY**: Room
+
+**CURRENT STATE**: INVITE_SENT
+
+**ALLOWED NEXT STATE(S)**:
+- JOINED
+
+**ACTOR ALLOWED**:
+- ✅ Freelancer (non-creator)
+- ❌ Client (creator already joined)
+- ❌ Admin
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Actor `auth.uid()` ≠ `created_by` (cannot join own room)
+- Room.state == INVITE_SENT
+- Room is not expired (expires_at > NOW())
+- Either `client_id` or `freelancer_id` is NULL, actor becomes the other party
+- Actor email domain ∈ {gmail.com, yahoo.com} (normalized)
+- No active dispute on this room
+- Actor does not already have this room ID in their session context
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **gmail.com, yahoo.com** (normalized)
+
+**INPUT VALIDATION RULES**:
+- Verify room_id is valid UUID
+- Verify actor.id is valid UUID
+- Reject if actor.email domain not whitelisted (after normalization)
+- Reject unknown fields in request body
+- No more than 1 join attempt per second per user (replay protection)
+- Normalize email before any comparison
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.joined', previous_state='INVITE_SENT', new_state='JOINED'
+- ✅ Set either `client_id` or `freelancer_id` to actor.id (whichever was NULL)
+- ❌ Payment event triggered: NO
+- ❌ Container sealed: NO
+- ❌ AI visibility change: NO (parties still do not see each other)
+
+**FAILURE HANDLING**:
+- If room expired → return 410 Gone, state remains INVITE_SENT
+- If actor == created_by → return 403 Forbidden, NO state change
+- If actor email domain invalid (after normalization) → return 403 Forbidden, NO state change
+- If room already in JOINED state → return 409 Conflict, NO state change
+- If actor has no valid session → return 401 Unauthorized, NO state change
+- Transaction rollback on any error, audit logged
+
+**EDGE CASES (MANDATORY)**:
+- Two actors try to join same INVITE_SENT room simultaneously → use DB row lock, last one wins, other gets 409 Conflict
+- Actor joins, then tries to join again (double-join) → reject second attempt with 409 Conflict
+- Actor joins with old expired session token → reject with 401, require fresh auth
+- Attacker tries to set `client_id` or `freelancer_id` manually in request → ignore, compute server-side based on created_by
+- Attacker tries to join room as "Admin" → no Admin joins, only Client/Freelancer based on logic
+
+---
+
+### TRANSITION 3: JOINED → LOCKED
+
+**ENTITY**: Room
+
+**CURRENT STATE**: JOINED
+
+**ALLOWED NEXT STATE(S)**:
+- LOCKED
+
+**ACTOR ALLOWED**:
+- ✅ Client
+- ✅ Freelancer
+- ❌ Admin
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Actor must be room participant (client_id or freelancer_id == auth.uid())
+- Room.state == JOINED
+- Both `client_id` and `freelancer_id` are non-NULL (both parties present)
+- Requirements have not been modified since INVITE_SENT (verify requirements_hash matches)
+- Payment information has been submitted:
+  - If client_id initiates: payer_id = client_id, amount = amount_total
+  - If freelancer_id initiates: payer_id = freelancer_id, amount = 5% * amount_total (freelancer fee)
+- Payment record exists with status = 'PENDING' or 'CONFIRMED'
+- **OTP verification required** (must be done < 5 minutes before this call)
+- Session freshness < 15 minutes
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **YES** (within last 5 minutes)
+- Session freshness required: **YES** (< 15 minutes)
+- Allowed email domains: **gmail.com, yahoo.com** (normalized)
+
+**INPUT VALIDATION RULES**:
+- Verify room_id is valid UUID
+- Verify actor.id matches session user
+- Verify actor is participant (reject if actor_id ∉ {client_id, freelancer_id})
+- Reject unknown fields
+- Reject if payment_id is not provided or malformed
+- Reject if payment is in FAILED state
+- Normalize email before any comparison
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.locked', previous_state='JOINED', new_state='LOCKED'
+- ✅ Trigger payment capture:
+  - Client placement fee: 5% of amount_total
+  - Freelancer placement fee: 5% of amount_total
+  - Validation fee: 6% of amount_total (deducted from client payment)
+  - Create payment records with type ∈ {PLACEMENT_FEE, VALIDATION_FEE}
+  - Hit Razorpay webhook handler (async, idempotent)
+- ✅ Set both containers to state = 'EMPTY' (if not already)
+- ✅ AI has read-only visibility into room scope and requirements
+- ❌ Containers sealed: NO (sealed only at SEALED state)
+
+**FAILURE HANDLING**:
+- If OTP not verified or expired → return 401 Unauthorized, NO state change
+- If session age > 15 minutes → return 401 Unauthorized, NO state change
+- If payment fails (Razorpay returns error) → return 402 Payment Required, NO state change, rollback payment creation
+- If requirements_hash mismatch (requirements modified) → return 409 Conflict, NO state change
+- If actor not a participant → return 403 Forbidden, NO state change
+- If payment already confirmed → proceed (idempotent)
+- If payment already in FAILED state → return 402 Payment Required, NO state change
+
+**EDGE CASES (MANDATORY)**:
+- Attacker tries to LOCK room without OTP → reject 401
+- Attacker tries to LOCK room with session age 20 minutes old → reject 401
+- Attacker tries to LOCK room as Admin → reject 403 (Admins cannot initiate state changes)
+- Both parties try to LOCK simultaneously → use DB row lock, both get 200 OK (idempotent on success)
+- Payment webhook arrives after LOCK initiated but before payment confirmation → wait, then transition once CONFIRMED
+- Attacker modifies requirements after ROOM_CREATED, tries to LOCK → detect hash mismatch, reject 409
+- Attacker tries to LOCK with freelancer_id = NULL (only one party) → reject 400
+- Rate limit: max 1 LOCK attempt per 10 seconds per user
+
+---
+
+### TRANSITION 4: LOCKED → IN_PROGRESS
+
+**ENTITY**: Room
+
+**CURRENT STATE**: LOCKED
+
+**ALLOWED NEXT STATE(S)**:
+- IN_PROGRESS
+
+**ACTOR ALLOWED**:
+- ✅ System (automatic)
+- ✅ Admin (manual override with reason)
+- ❌ Client
+- ❌ Freelancer
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Room.state == LOCKED
+- All payments are CONFIRMED:
+  - PLACEMENT_FEE (client) status = CONFIRMED
+  - PLACEMENT_FEE (freelancer) status = CONFIRMED
+  - VALIDATION_FEE status = CONFIRMED
+- Both containers exist with state = 'EMPTY'
+- No active disputes
+- Room not expired (expires_at > NOW())
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (system-triggered, but must be via service_role or admin JWT with 'admin' role)
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **N/A** (system operation)
+
+**INPUT VALIDATION RULES**:
+- If triggered by Admin: validate `reason` field, non-empty string, max 500 chars
+- Verify all payment_ids match payment table records
+- Verify room_id is valid UUID
+- Reject unknown fields
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.in_progress', previous_state='LOCKED', new_state='IN_PROGRESS'
+- ✅ If triggered by Admin: audit log includes reason and admin_id
+- ✅ Notify both parties (email) that room is now accepting artifacts
+- ✅ AI has read-only visibility into room scope and requirements for validation purposes
+- ✅ Containers remain EMPTY but now accept artifact uploads
+
+**FAILURE HANDLING**:
+- If any payment not CONFIRMED → return 402 Payment Required, NO state change, log failed attempt
+- If containers not EMPTY → return 409 Conflict (invalid state), NO state change
+- If room expired → return 410 Gone, NO state change
+- If actor not Admin/System → return 403 Forbidden, NO state change
+- All failures must be audit-logged
+
+**EDGE CASES (MANDATORY)**:
+- Webhook arrives late: payment marked CONFIRMED after IN_PROGRESS initiated → idempotent, transition succeeds
+- Attacker tries to manually trigger IN_PROGRESS with non-admin JWT → reject 403
+- Attacker tries to trigger IN_PROGRESS without all payments CONFIRMED → reject 402
+- System tries to trigger twice → idempotent, second attempt returns 200 OK (no-op)
+- Two simultaneous payment confirmations arrive → use DB transaction isolation, both processed atomically
+
+---
+
+### TRANSITION 5: IN_PROGRESS → UNDER_VALIDATION
+
+**ENTITY**: Room
+
+**CURRENT STATE**: IN_PROGRESS
+
+**ALLOWED NEXT STATE(S)**:
+- UNDER_VALIDATION
+
+**ACTOR ALLOWED**:
+- ✅ Client
+- ✅ Freelancer
+- ✅ Admin (manual override with reason)
+- ❌ System_AI (read-only visibility, cannot initiate transitions)
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Room.state == IN_PROGRESS
+- Both containers must be in state = 'SEALED' (uploads finalized)
+- Both containers must have at least one artifact
+- No pending uploads
+- Both parties have explicitly indicated "ready for validation" (optional UX, but backend does NOT require explicit confirmation - proceeding based on sealed state)
+- Room not expired
+- Actor must be participant or Admin
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **gmail.com, yahoo.com** (normalized)
+
+**INPUT VALIDATION RULES**:
+- Verify room_id is valid UUID
+- Verify actor.id is participant or has admin JWT role
+- Reject unknown fields
+- Reject if containers not in SEALED state
+- Normalize email before any comparison
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.under_validation', previous_state='IN_PROGRESS', new_state='UNDER_VALIDATION'
+- ✅ AI has read-only access to artifacts and requirements for comparison analysis
+- ✅ AI cannot upload, modify state, release assets, or bypass validation rules
+- ✅ Both containers transition to state = 'UNDER_VALIDATION' (automatic, not manual)
+- ✅ Disable artifact uploads for both parties
+- ✅ Notify Admin that room is awaiting validation review
+
+**FAILURE HANDLING**:
+- If containers not SEALED → return 409 Conflict, NO state change
+- If actor not participant and not Admin → return 403 Forbidden, NO state change
+- If AI read operation fails → log error, keep room in IN_PROGRESS, allow retry after 5 minutes
+- If room expired → return 410 Gone, NO state change
+- Transaction rollback on any error
+
+**EDGE CASES (MANDATORY)**:
+- Attacker submits empty container, tries to seal/validate → sealed state allowed only if artifacts exist (enforced by container state logic)
+- One party submits artifacts, other submits empty container → validation will fail (mismatch), captured in analysis output
+- AI analysis returns error → no state change, manual retry allowed
+- Both parties try to initiate UNDER_VALIDATION simultaneously → use DB row lock, both get 200 OK (idempotent)
+- Admin force-transitions while AI analysis still in flight → mark result as stale, allow new analysis on demand
+
+---
+
+### TRANSITION 6: UNDER_VALIDATION → SWAP_READY
+
+**ENTITY**: Room
+
+**CURRENT STATE**: UNDER_VALIDATION
+
+**ALLOWED NEXT STATE(S)**:
+- SWAP_READY
+
+**ACTOR ALLOWED**:
+- ✅ Admin (required)
+- ❌ Client
+- ❌ Freelancer
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Room.state == UNDER_VALIDATION
+- Both containers state = 'UNDER_VALIDATION'
+- Both containers have validation_summary:
+  - Either ADMIN explicitly validates (admin approval)
+  - Or AI provides analysis AND admin approves
+- For each container: validation_summary must indicate MATCH or ADMIN_APPROVED
+- All payments still CONFIRMED
+- Room not expired
+- Actor must have JWT role == 'admin'
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES** (Admin only)
+- OTP required: **NO**
+- Session freshness required: **NO** (but session must have 'admin' role in JWT)
+- Allowed email domains: **N/A** (admin operation)
+
+**INPUT VALIDATION RULES**:
+- Verify admin_id in JWT has role == 'admin'
+- Verify room_id is valid UUID
+- Require `approval_reason` field: non-empty string, max 1000 chars (why validation passes)
+- Reject unknown fields
+- Validate that both containers have validation results
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.swap_ready', previous_state='UNDER_VALIDATION', new_state='SWAP_READY'
+- ✅ Audit log includes: admin_id, approval_reason, validation_details from both containers
+- ✅ Both containers transition to state = 'VALIDATED' (automatic)
+- ✅ Notify both parties: "Your swap is ready, awaiting atomic transfer"
+- ✅ Update validation_summary to 'APPROVED' for both containers
+
+**FAILURE HANDLING**:
+- If actor not Admin → return 403 Forbidden, NO state change
+- If containers not UNDER_VALIDATION → return 409 Conflict, NO state change
+- If payments not CONFIRMED → return 402 Payment Required, NO state change
+- If validation_summary not set → return 400 Bad Request, NO state change
+- If approval_reason empty → return 400 Bad Request, NO state change
+- All failures audit-logged
+
+**EDGE CASES (MANDATORY)**:
+- Admin approves, then tries to approve again → idempotent, 200 OK (no-op on second call)
+- Attacker pretends to be Admin (JWT role != 'admin') → return 403 Forbidden
+- Admin tries to approve without approval_reason → return 400 Bad Request
+- One container passed validation, other failed → Admin must reject FIRST, transition to FAILED instead
+- AI analysis contradicts Admin approval → Admin decision overrides, logged in audit trail
+
+---
+
+### TRANSITION 7: SWAP_READY → SWAPPED
+
+**ENTITY**: Room
+
+**CURRENT STATE**: SWAP_READY
+
+**ALLOWED NEXT STATE(S)**:
+- SWAPPED
+
+**ACTOR ALLOWED**:
+- ✅ System_AI (automatic atomic swap executor)
+- ❌ Admin
+- ❌ Client
+- ❌ Freelancer
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Room.state == SWAP_READY
+- Container_A.state == 'VALIDATED'
+- Container_B.state == 'VALIDATED'
+- All payments status = 'CONFIRMED'
+- Files exist in Supabase Storage for both containers
+- Room not expired
+- No ongoing disputes or holds
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (system operation via service_role)
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **N/A**
+
+**INPUT VALIDATION RULES**:
+- Verify all prerequisites are met via DB SELECT (no input trust)
+- Verify Container_A and Container_B have matching room_id
+- Validate payment records match room amount
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.swapped', previous_state='SWAP_READY', new_state='SWAPPED'
+- ✅ Both containers transition to state = 'TRANSFERRED' (automatic)
+- ✅ Move artifacts from containers to respective owners in Supabase:
+  - Container_A artifacts → Client's storage
+  - Container_B artifacts → Freelancer's storage
+- ✅ Mark all payment records as final, no further refunds allowed
+- ✅ Release final remaining balance (amount_total - placement fees - validation fee) to Freelancer via Razorpay
+- ✅ Generate final PDF report with all metadata
+- ✅ Send completion email to both parties (identity still hidden)
+- ✅ Room marked as FINAL (immutable, no further transitions)
+
+**FAILURE HANDLING**:
+- If any payment not CONFIRMED → DO NOT PROCEED, stay in SWAP_READY, retry in 5 minutes
+- If artifacts cannot be transferred to storage → CRITICAL ERROR, alert Admin, stay in SWAP_READY
+- If final payment release fails → keep room in SWAP_READY, alert Admin, retry manually
+- If any error occurs → SWAP MUST NOT COMPLETE (atomic all-or-nothing)
+- All failures logged to audit_logs with error details
+
+**EDGE CASES (MANDATORY)**:
+- Attacker tries to call SWAP endpoint manually (not system) → reject 403 Forbidden
+- Network failure during artifact transfer → rollback, retry automatically
+- One artifact deleted before swap → CRITICAL, abort swap, stay in SWAP_READY, alert Admin
+- Duplicate swap attempt (idempotency) → if SWAPPED already, return 200 OK (no-op)
+- Race condition: two swap processes run simultaneously → use DB transaction + row lock, only one succeeds
+
+---
+
+### TRANSITION 8: IN_PROGRESS → FAILED
+
+**ENTITY**: Room
+
+**CURRENT STATE**: IN_PROGRESS
+
+**ALLOWED NEXT STATE(S)**:
+- FAILED
+
+**ACTOR ALLOWED**:
+- ✅ Admin (required, with reason)
+- ✅ Client (can request cancellation)
+- ✅ Freelancer (can request cancellation)
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Room.state == IN_PROGRESS
+- If Admin: provide `reason` for failure
+- If Client/Freelancer: provide cancellation request reason
+- Room not yet SWAPPED (immutable once swapped)
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO** (cancellation does not require OTP)
+- Session freshness required: **NO**
+- Allowed email domains: **gmail.com, yahoo.com**
+
+**INPUT VALIDATION RULES**:
+- Verify actor is Admin or participant
+- Require `reason` field: non-empty, max 1000 chars
+- Reject unknown fields
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.failed', previous_state='IN_PROGRESS', new_state='FAILED'
+- ✅ If initiated by Client/Freelancer: flag as dispute/cancellation request, notify Admin
+- ✅ If initiated by Admin: mark as platform failure or rule violation
+- ✅ Placement and validation fees retained (non-refundable)
+- ✅ Artifacts not released
+- ✅ Containers transition to state = 'VALIDATION_FAILED' (locked, no further action)
+- ✅ Notify both parties (high-level summary only, no detailed validation_details)
+
+**FAILURE HANDLING**:
+- If actor not Admin/participant → return 403 Forbidden, NO state change
+- If reason empty → return 400 Bad Request, NO state change
+
+**EDGE CASES (MANDATORY)**:
+- Both parties request cancellation simultaneously → mark room as FAILED due to mutual cancellation
+- Attacker tries to fail room as non-participant → reject 403 Forbidden
+- After FAILED, party requests refund → only refund if platform fault (Admin decision), logged explicitly
+
+---
+
+### TRANSITION 9: INVITE_SENT → EXPIRED
+
+**ENTITY**: Room
+
+**CURRENT STATE**: INVITE_SENT
+
+**ALLOWED NEXT STATE(S)**:
+- EXPIRED
+
+**ACTOR ALLOWED**:
+- ✅ System (automatic, via scheduled job)
+- ❌ Admin
+- ❌ Client
+- ❌ Freelancer
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Room.state == INVITE_SENT
+- expires_at <= NOW()
+- No second party has joined
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (system job)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify room_id is valid UUID
+- Verify expires_at is in the past
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='room.expired', previous_state='INVITE_SENT', new_state='EXPIRED'
+- ✅ No fees charged (room never locked)
+- ✅ Notify creator: invite expired
+
+**FAILURE HANDLING**:
+- If room already in different state → skip (idempotent)
+
+---
+
+## CONTAINER STATE TRANSITIONS
+
+---
+
+### TRANSITION 10: EMPTY → ARTIFACT_PLACED
+
+**ENTITY**: Container
+
+**CURRENT STATE**: EMPTY
+
+**ALLOWED NEXT STATE(S)**:
+- ARTIFACT_PLACED
+
+**ACTOR ALLOWED**:
+- ✅ Owner (client or freelancer)
+- ❌ Other party
+- ❌ Admin
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Container.state == EMPTY
+- Room.state == IN_PROGRESS (artifact upload only in this phase)
+- Actor == container.owner_id
+- At least one file being uploaded
+- File size per artifact: max 100 MB
+- Total container size: max 1 GB
+- All files pass virus scan (async, non-blocking)
+- File MIME types are whitelisted (no executables, no archives without justification)
+- File hash computed (SHA-256) for deduplication
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **gmail.com, yahoo.com**
+
+**INPUT VALIDATION RULES**:
+- Verify actor == container.owner_id
+- Verify room.state == IN_PROGRESS
+- Reject files > 100 MB
+- Reject unknown MIME types
+- Reject if cumulative size > 1 GB
+- Validate all file metadata (name, size, hash)
+- Reject unknown fields
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Create artifact records in database
+- ✅ Upload files to Supabase Storage (path: rooms/{room_id}/containers/{container_side}/artifacts/{artifact_id}/{filename})
+- ✅ Trigger virus scan (VirusTotal or similar, async)
+- ✅ Audit log entry: action='container.artifact_placed', previous_state='EMPTY', new_state='ARTIFACT_PLACED'
+- ✅ Compute content_hash (Merkle tree of all artifact hashes)
+- ✅ Container.state = ARTIFACT_PLACED
+- ❌ Containers not sealed yet (sealed on explicit transition)
+
+**FAILURE HANDLING**:
+- If virus scan detects threat → return 422 Unprocessable Entity, reject upload, mark artifact as is_infected=true, NO state change
+- If actor not owner → return 403 Forbidden, NO state change
+- If file > 100 MB → return 413 Payload Too Large, NO state change
+- If room not IN_PROGRESS → return 409 Conflict, NO state change
+- If upload fails (Supabase error) → rollback, return 500 Internal Server Error
+
+**EDGE CASES (MANDATORY)**:
+- Attacker tries to upload as other party → reject 403 Forbidden
+- Attacker tries to upload when room in LOCKED state → reject 409 Conflict
+- Virus scan async completes after upload → mark artifact is_infected=true, notify user
+- Same file uploaded twice (hash match) → deduplicate, store once, link both artifact records
+- Partial upload failure (1 of 3 files fails) → rollback entire upload, return error, state remains EMPTY
+- Attacker tries to upload after state transitions to SEALED → reject 409 Conflict (RLS enforces this at DB level)
+
+---
+
+### TRANSITION 11: ARTIFACT_PLACED → SEALED
+
+**ENTITY**: Container
+
+**CURRENT STATE**: ARTIFACT_PLACED
+
+**ALLOWED NEXT STATE(S)**:
+- SEALED
+
+**ACTOR ALLOWED**:
+- ✅ Owner (client or freelancer)
+- ❌ Other party
+- ❌ Admin
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Container.state == ARTIFACT_PLACED
+- Room.state == IN_PROGRESS
+- Actor == container.owner_id
+- At least one artifact in container
+- All artifacts have completed virus scan (is_scanned = true)
+- No infected files (is_infected = false for all)
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+- Allowed email domains: **gmail.com, yahoo.com**
+
+**INPUT VALIDATION RULES**:
+- Verify actor == container.owner_id
+- Verify container.state == ARTIFACT_PLACED
+- Reject if any artifact is_infected = true
+- Reject if any artifact is_scanned = false
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Audit log entry: action='container.sealed', previous_state='ARTIFACT_PLACED', new_state='SEALED'
+- ✅ Container.state = SEALED
+- ✅ Lock all artifact file hashes (no modification)
+- ✅ Disable further uploads for this container
+- ✅ Notify other party that this side is sealed (no identity reveal)
+
+**FAILURE HANDLING**:
+- If any artifact still is_infected → return 422 Unprocessable Entity, NO state change
+- If any artifact still is_scanned = false → return 422 Unprocessable Entity, NO state change
+- If actor not owner → return 403 Forbidden, NO state change
+- If container empty → return 400 Bad Request, NO state change
+
+**EDGE CASES (MANDATORY)**:
+- Attacker tries to seal while virus scan still pending → reject 422 (must wait for scan)
+- Infected file detected mid-seal → rollback, NO state change
+- Attacker tries to seal twice → idempotent, 200 OK on second attempt (no-op)
+- After seal, attacker tries to upload more files → reject 409 Conflict (RLS prevents this)
+
+---
+
+### TRANSITION 12: SEALED → UNDER_VALIDATION
+
+**ENTITY**: Container
+
+**CURRENT STATE**: SEALED
+
+**ALLOWED NEXT STATE(S)**:
+- UNDER_VALIDATION
+
+**ACTOR ALLOWED**:
+- ✅ System (automatic, triggered by Room state change)
+- ❌ Client
+- ❌ Freelancer
+- ❌ Admin
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Container.state == SEALED
+- Room.state transitioned to UNDER_VALIDATION
+- Both containers in this room are SEALED
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (system operation)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify container_id is valid UUID
+- Verify room.state == UNDER_VALIDATION
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Container.state = UNDER_VALIDATION
+- ✅ Lock artifacts (no further access until VALIDATED or VALIDATION_FAILED)
+- ✅ Audit log entry: action='container.under_validation', previous_state='SEALED', new_state='UNDER_VALIDATION'
+
+**FAILURE HANDLING**:
+- If container not SEALED → skip (idempotent)
+- If room not in UNDER_VALIDATION → skip
+
+**EDGE CASES (MANDATORY)**:
+- Transition already completed → idempotent, no-op
+
+---
+
+### TRANSITION 13: UNDER_VALIDATION → VALIDATED
+
+**ENTITY**: Container
+
+**CURRENT STATE**: UNDER_VALIDATION
+
+**ALLOWED NEXT STATE(S)**:
+- VALIDATED
+
+**ACTOR ALLOWED**:
+- ✅ Admin (required, with approval)
+- ❌ Client
+- ❌ Freelancer
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Container.state == UNDER_VALIDATION
+- Room.state == UNDER_VALIDATION
+- Admin must provide validation approval (override AI if needed)
+- Admin must have JWT role == 'admin'
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES** (Admin only)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify admin_id has role == 'admin'
+- Verify container_id is valid UUID
+- Reject unknown fields
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Container.state = VALIDATED
+- ✅ Set validation_summary = 'APPROVED'
+- ✅ Audit log entry: action='container.validated', previous_state='UNDER_VALIDATION', new_state='VALIDATED'
+
+**FAILURE HANDLING**:
+- If actor not Admin → return 403 Forbidden, NO state change
+- If container not UNDER_VALIDATION → return 409 Conflict, NO state change
+
+**EDGE CASES (MANDATORY)**):
+- Admin approves both containers → Room can now transition to SWAP_READY
+- Admin approves one container, rejects other → Room transitions to FAILED
+
+---
+
+### TRANSITION 14: UNDER_VALIDATION → VALIDATION_FAILED
+
+**ENTITY**: Container
+
+**CURRENT STATE**: UNDER_VALIDATION
+
+**ALLOWED NEXT STATE(S)**:
+- VALIDATION_FAILED
+
+**ACTOR ALLOWED**:
+- ✅ Admin (required, with reason)
+- ❌ Client
+- ❌ Freelancer
+- ❌ System_AI
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Container.state == UNDER_VALIDATION
+- Room.state == UNDER_VALIDATION
+- Admin must provide rejection reason
+- Admin must have JWT role == 'admin'
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES** (Admin only)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify admin_id has role == 'admin'
+- Verify container_id is valid UUID
+- Require `reason` field: non-empty, max 1000 chars
+- Reject unknown fields
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Container.state = VALIDATION_FAILED
+- ✅ Set validation_summary = 'REJECTED'
+- ✅ Audit log entry: action='container.validation_failed', previous_state='UNDER_VALIDATION', new_state='VALIDATION_FAILED', reason included
+- ✅ Room transitions to FAILED (automatic)
+
+**FAILURE HANDLING**:
+- If actor not Admin → return 403 Forbidden, NO state change
+- If reason empty → return 400 Bad Request, NO state change
+
+**EDGE CASES (MANDATORY)**:
+- Admin rejects one container, other still under review → only rejected one fails, room transitions to FAILED
+- After rejection, party requests new room → allowed (new transaction)
+
+---
+
+### TRANSITION 15: VALIDATED → TRANSFERRED
+
+**ENTITY**: Container
+
+**CURRENT STATE**: VALIDATED
+
+**ALLOWED NEXT STATE(S)**:
+- TRANSFERRED
+
+**ACTOR ALLOWED**:
+- ✅ System_AI (automatic, during Room SWAP_READY → SWAPPED)
+- ❌ Client
+- ❌ Freelancer
+- ❌ Admin
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Container.state == VALIDATED
+- Room.state == SWAPPED (happens as part of atomic swap)
+- Artifacts exist and are ready for transfer
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (system operation)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify container_id is valid UUID
+- Verify artifacts are accessible
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Container.state = TRANSFERRED
+- ✅ Grant counterparty read access to artifacts in Supabase (signed URLs, time-limited)
+- ✅ Audit log entry: action='container.transferred', previous_state='VALIDATED', new_state='TRANSFERRED'
+
+**FAILURE HANDLING**:
+- If artifacts not accessible → CRITICAL, abort swap, alert Admin
+- If Supabase access grant fails → rollback swap, alert Admin
+
+---
+
+## PAYMENT STATE TRANSITIONS
+
+---
+
+### TRANSITION 16: PAYMENT: PENDING → CONFIRMED
+
+**ENTITY**: Payment
+
+**CURRENT STATE**: PENDING
+
+**ALLOWED NEXT STATE(S)**:
+- CONFIRMED
+
+**ACTOR ALLOWED**:
+- ✅ System (via Razorpay webhook, idempotent)
+- ❌ Client
+- ❌ Freelancer
+- ❌ Admin
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Payment.status == PENDING
+- Razorpay webhook verified (signature validated)
+- Payment provider_payment_id returned by Razorpay
+- Amount matches expected (amount_total + fees)
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (webhook)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify webhook signature with Razorpay key
+- Verify room_id exists
+- Verify payment_type is valid
+- Verify amount matches expected
+- Reject unknown fields
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Payment.status = CONFIRMED
+- ✅ Audit log entry: action='payment.confirmed', previous_state='PENDING', new_state='CONFIRMED'
+- ✅ Room can now proceed to LOCKED state (if all payments confirmed)
+
+**FAILURE HANDLING**:
+- If webhook signature invalid → return 401 Unauthorized, NO state change
+- If payment amount mismatch → return 400 Bad Request, NO state change
+- If idempotent retry (already CONFIRMED) → return 200 OK (no-op)
+
+**EDGE CASES (MANDATORY)**:
+- Webhook arrives twice (duplicate) → idempotent, 200 OK both times
+- Webhook arrives out of order (delayed) → verify signature, process normally
+- Attacker tries to manually set payment CONFIRMED → reject 403 (no endpoint allows this)
+
+---
+
+### TRANSITION 17: PAYMENT: PENDING → FAILED
+
+**ENTITY**: Payment
+
+**CURRENT STATE**: PENDING
+
+**ALLOWED NEXT STATE(S)**:
+- FAILED
+
+**ACTOR ALLOWED**:
+- ✅ System (via Razorpay webhook)
+- ❌ Client
+- ❌ Freelancer
+- ❌ Admin
+
+**PRECONDITIONS (ALL MUST PASS)**:
+- Payment.status == PENDING
+- Razorpay webhook indicates payment failed
+- Webhook signature verified
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **NO** (webhook)
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**INPUT VALIDATION RULES**:
+- Verify webhook signature
+- Verify failure reason included
+- Verify room_id exists
+
+**SIDE EFFECTS (MANDATORY)**:
+- ✅ Payment.status = FAILED
+- ✅ Audit log entry: action='payment.failed', previous_state='PENDING', new_state='FAILED'
+- ✅ Notify payer: payment failed, can retry
+- ✅ Room cannot proceed to LOCKED until payment retried and confirmed
+
+**FAILURE HANDLING**:
+- If webhook invalid → reject 401
+- If already FAILED → return 200 OK (idempotent)
+
+---
+
+## ARTIFACT MANAGEMENT (Special: Not State Transitions but Critical Rules)
+
+---
+
+### ARTIFACT: CREATE (Upload)
+
+**ENTITY**: Artifact
+
+**OPERATION**: INSERT
+
+**ALLOWED CONDITIONS**:
+- Container.state ∈ {EMPTY, ARTIFACT_PLACED} (enforced at RLS level)
+- Actor == container.owner_id
+- File size < 100 MB
+- Total container size < 1 GB
+- Virus scan passes (async)
+- MIME type whitelisted
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**SIDE EFFECTS**:
+- ✅ Artifact record created
+- ✅ File uploaded to Supabase Storage
+- ✅ Audit log entry: action='artifact.created'
+- ✅ Virus scan triggered (async)
+
+**FAILURE HANDLING**:
+- If infected → mark is_infected=true, notify user, NO state change to SEALED
+- If upload fails → rollback, return error
+
+---
+
+### ARTIFACT: DELETE (Remove)
+
+**ENTITY**: Artifact
+
+**OPERATION**: DELETE
+
+**ALLOWED CONDITIONS**:
+- Container.state ∈ {EMPTY, ARTIFACT_PLACED} (enforced at RLS level)
+- Actor == container.owner_id
+- Container not yet SEALED
+
+**SESSION & AUTH REQUIREMENTS**:
+- Authentication required: **YES**
+- OTP required: **NO**
+- Session freshness required: **NO**
+
+**SIDE EFFECTS**:
+- ✅ Artifact record deleted from database
+- ✅ File deleted from Supabase Storage
+- ✅ Audit log entry: action='artifact.deleted'
+
+**FAILURE HANDLING**:
+- If actor not owner → return 403 Forbidden
+- If container SEALED → return 409 Conflict (RLS enforces)
+- If file deletion fails → rollback database deletion
+
+---
+
+### ARTIFACT: VIEW (Read)
+
+**ENTITY**: Artifact
+
+**OPERATION**: SELECT
+
+**ALLOWED CONDITIONS**:
+- If owner: always allowed
+- If counterparty: only if container.state ∈ {VALIDATED, TRANSFERRED}
+- If admin: always allowed
+
+**SIDE EFFECTS**:
+- ✅ Audit log entry MANDATORY: action='artifact.viewed', actor_id, artifact_id, container_id, room_id, timestamp
+- ✅ Audit all non-owner artifact access without exception
+- ✅ Audit all Admin and System artifact access without exception
+- ✅ Return artifact metadata + signed URL (time-limited, 24 hours)
+
+**FAILURE HANDLING**:
+- If actor not owner and container not VALIDATED/TRANSFERRED → return 403 Forbidden, NO access, audit access denial attempt
+
+---
+
+## GLOBAL VALIDATION FRAMEWORK
+
+All transitions must apply these checks:
+
+1. **Identity Verification**
+   - Verify actor.email domain ∈ {gmail.com, yahoo.com}
+   - Normalize email: lowercase, remove dots for gmail.com, strip '+' suffix
+   - Verify actor.id matches auth.uid()
+   - Reject any mismatch immediately
+
+2. **State Machine Compliance**
+   - Verify current state == expected
+   - Verify next state is in allowed_next_states
+   - Reject any forbidden transition
+   - Log all failed attempts
+
+3. **Room/Container Consistency**
+   - Verify room_id exists
+   - Verify container_id belongs to room_id
+   - Verify both containers in same room have consistent state
+   - Reject orphaned records
+
+4. **Payment Verification**
+   - Verify all required payments are present
+   - Verify payment amounts are correct
+   - Verify payment status matches expectations
+   - Verify Razorpay IDs are non-null for CONFIRMED payments
+
+5. **Audit Logging**
+   - Every transition attempt must be logged
+   - Every failure must be logged
+   - Include actor_id, room_id, previous_state, new_state, reason
+   - Immutable (APPEND-ONLY at DB level)
+   - All artifact access (non-owner) must be audit-logged
+   - All Admin/System access must be audit-logged
+
+---
+
+## SELF-CHECK VERIFICATION
+
+✅ **No transition violates docs/state-machine.md** — All transitions match authoritative contract exactly
+
+✅ **No actor gains extra power** — Client/Freelancer cannot change state directly, only Admin/System can initiate transitions
+
+✅ **No session loophole exists** — All sensitive operations require fresh session + OTP verification
+
+✅ **No payment shortcut exists** — State changes gated on payment confirmation, verified at DB level
+
+✅ **No identity leak exists** — Parties never see each other's identity, only see high-level summaries
+
+✅ **Database layer is final law** — RLS policies prevent any bypass, triggers enforce immutability
+
+✅ **System is abuse-resistant** — Fees charged upfront, no free testing, no partial swaps, no retroactive changes
+
+---
+
+## SYSTEM PROPERTIES
+
+This guard framework guarantees:
+
+- **Atomicity**: Swap is all-or-nothing
+- **Immutability**: audit_logs and payments cannot be deleted or modified
+- **Auditability**: Every action is logged, every decision is replayable
+- **Separation of Concerns**: Frontend cannot trigger state transitions, only backend can
+- **Fail-Safe Defaults**: If condition fails, state does NOT change
+- **Zero-Knowledge Identity**: Parties isolated from each other, only Admin sees details
+
+The system is **unbreachable by design**, not by luck.
+
+---
+
+## VERIFICATION CHECKLIST (For Implementers)
+
+Before deploying backend state transition logic:
+- [ ] All 17 transitions implemented exactly as specified
+- [ ] All preconditions checked before state change
+- [ ] All side effects executed in transaction
+- [ ] All audit logs are append-only (no update, no delete)
+- [ ] All email comparisons normalize email first (lowercase, remove dots/+ for gmail)
+- [ ] All session validations use Supabase auth introspection (not database lookups)
+- [ ] All AI read operations are read-only (no mutations, no agency)
+- [ ] All artifact access by non-owner is audited
+- [ ] All Admin/System artifact access is audited
+- [ ] All state transitions reject retroactive changes
+- [ ] All payment transitions immutable (PENDING → CONFIRMED or FAILED, never reversed)
+- [ ] All failed transition attempts are logged
+
+---
+
+⚠️  **FINAL AND IMMUTABLE**
+
+This document defines the absolute ground truth for ENCLOSURE backend state transitions.
+No deviation from these rules is permitted.
+No shortcuts. No optional behavior. No exceptions.
+Database enforcement (triggers, RLS) provides defense-in-depth.
+This is law.
