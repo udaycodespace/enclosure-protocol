@@ -2,6 +2,7 @@ import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
 import { NotificationService } from '../../notification/notification.service';
 import { RoomFailureService } from '../../room/services/room-failure.service';
+import { ContainerRepository } from '../../repositories/container.repository';
 
 interface RejectContainerInput {
   adminId: string;
@@ -22,6 +23,7 @@ export class ContainerRejectService {
   constructor(
     private readonly auditService: AuditService,
     private readonly notificationService: NotificationService,
+    private readonly containerRepository: ContainerRepository,
     @Inject(forwardRef(() => RoomFailureService))
     private readonly roomFailureService: RoomFailureService,
   ) {}
@@ -58,7 +60,7 @@ export class ContainerRejectService {
 
       // TODO: ContainerRepository.findOne(containerId)
       // Verify container exists in database; throw if not found
-      const container = {} as any; // TODO: Remove placeholder after repository implementation
+      const container = await this.containerRepository.findOne(containerId);
       if (!container) {
         throw new Error(`Container ${containerId} not found`);
       }
@@ -103,12 +105,10 @@ export class ContainerRejectService {
       // Update container state to 'VALIDATION_FAILED', set rejection reason, update timestamp
       // Expected behavior: atomic update, committed to database
 
-      const rejectedContainer = {
-        ...container,
+      const rejectedContainer = await this.containerRepository.update(containerId, {
         state: 'VALIDATION_FAILED',
         validation_summary: rejectionReason,
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id=adminId, action='container_reject', container_id=containerId, status=TRANSITION,

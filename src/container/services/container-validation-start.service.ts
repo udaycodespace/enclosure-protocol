@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
+import { RoomRepository } from '../../repositories/room.repository';
+import { ContainerRepository } from '../../repositories/container.repository';
 
 interface StartValidationInput {
   containerId: string;
@@ -15,7 +17,11 @@ interface StartValidationResult {
 
 @Injectable()
 export class ContainerValidationStartService {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly roomRepository: RoomRepository,
+    private readonly containerRepository: ContainerRepository,
+  ) {}
 
   async startValidation(input: StartValidationInput): Promise<StartValidationResult> {
     const { containerId, systemActorId = 'SYSTEM' } = input;
@@ -42,7 +48,7 @@ export class ContainerValidationStartService {
 
       // TODO: ContainerRepository.findOne(containerId)
       // Verify container exists in database; throw if not found
-      const container = {} as any; // TODO: Remove placeholder after repository implementation
+      const container = await this.containerRepository.findOne(containerId);
       if (!container) {
         throw new Error(`Container ${containerId} not found`);
       }
@@ -57,7 +63,7 @@ export class ContainerValidationStartService {
 
       // TODO: RoomRepository.findOne(container.room_id)
       // Verify parent room exists and state = UNDER_VALIDATION
-      const room = {} as any; // TODO: Remove placeholder after repository implementation
+      const room = await this.roomRepository.findOne(container.room_id);
       if (!room || room.state !== 'UNDER_VALIDATION') {
         throw new Error(
           `Room ${container.room_id} not found or not in UNDER_VALIDATION state`,
@@ -91,11 +97,9 @@ export class ContainerValidationStartService {
       // Update container.state to 'UNDER_VALIDATION' and set updated_at to current timestamp
       // Expected behavior: atomic update, committed to database
 
-      const validatingContainer = {
-        ...container,
+      const validatingContainer = await this.containerRepository.update(containerId, {
         state: 'UNDER_VALIDATION',
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id='SYSTEM', action='container_validation_start', container_id=containerId, status=TRANSITION,

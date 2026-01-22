@@ -9,6 +9,8 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
 import { ContainerApproveService } from '../../container/services/container-approve.service';
+import { RoomRepository } from '../../repositories/room.repository';
+import { ContainerRepository } from '../../repositories/container.repository';
 
 interface ApproveSwapInput {
   adminId: string;
@@ -28,9 +30,10 @@ interface ApproveSwapResult {
 export class RoomSwapApprovalService {
   constructor(
     private readonly auditService: AuditService,
+    private readonly roomRepository: RoomRepository,
+    private readonly containerRepository: ContainerRepository,
     @Inject(forwardRef(() => ContainerApproveService))
     private readonly containerApproveService: ContainerApproveService,
-    // TODO: ContainerModule coordination via module-level DI
   ) {}
 
   async approveSwap(input: ApproveSwapInput): Promise<ApproveSwapResult> {
@@ -65,7 +68,7 @@ export class RoomSwapApprovalService {
 
       // TODO: RoomRepository.findOne(roomId)
       // Verify room exists in database; throw if not found
-      const room = {} as any; // TODO: Remove placeholder after repository implementation
+      const room = await this.roomRepository.findOne(roomId);
       if (!room) {
         throw new Error(`Room ${roomId} not found`);
       }
@@ -80,7 +83,7 @@ export class RoomSwapApprovalService {
 
       // TODO: ContainerRepository.findByRoomId(roomId)
       // Fetch both containers for this room (creator and counterparty)
-      const containers: any[] = []; // TODO: Remove placeholder after repository implementation
+      const containers = await this.containerRepository.findByRoomId(roomId);
       if (containers.length !== 2) {
         throw new Error(
           `Room ${roomId} must have exactly 2 containers, found ${containers.length}`,
@@ -138,14 +141,12 @@ export class RoomSwapApprovalService {
       // Update room.state to 'SWAP_READY', record admin approval details and timestamp
       // Expected behavior: atomic update, committed to database
 
-      const approvedRoom = {
-        ...room,
+      const approvedRoom = await this.roomRepository.update(roomId, {
         state: 'SWAP_READY',
         approved_by: adminId,
         approval_reason: approvalReason,
         approved_at: new Date(),
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id=adminId, action='room_swap_approval', room_id=roomId, status=TRANSITION,

@@ -14,6 +14,9 @@ import { PaymentService } from '../../payment/payment/payment.service';
 import { AuditService } from '../../audit/audit.service';
 import { NotificationService } from '../../notification/notification.service';
 import { ContainerTransferService } from '../../container/services/container-transfer.service';
+import { RoomRepository } from '../../repositories/room.repository';
+import { ContainerRepository } from '../../repositories/container.repository';
+import { PaymentRepository } from '../../repositories/payment.repository';
 
 interface ExecuteSwapInput {
   roomId: string;
@@ -37,6 +40,9 @@ export class AtomicSwapExecutionService {
     private readonly paymentService: PaymentService,
     private readonly auditService: AuditService,
     private readonly notificationService: NotificationService,
+    private readonly roomRepository: RoomRepository,
+    private readonly containerRepository: ContainerRepository,
+    private readonly paymentRepository: PaymentRepository,
     @Inject(forwardRef(() => ContainerTransferService))
     private readonly containerTransferService: ContainerTransferService,
   ) {}
@@ -64,7 +70,7 @@ export class AtomicSwapExecutionService {
 
       // TODO: RoomRepository.findOne(roomId)
       // Verify room exists in database; throw if not found
-      const room = {} as any; // TODO: Remove placeholder
+      const room = await this.roomRepository.findOne(roomId);
       if (!room) {
         throw new Error(`Room ${roomId} not found`);
       }
@@ -79,7 +85,7 @@ export class AtomicSwapExecutionService {
 
       // TODO: ContainerRepository.findByRoomId(roomId)
       // Fetch both containers; verify exactly 2 containers exist
-      const containers: any[] = []; // TODO: Remove placeholder
+      const containers = await this.containerRepository.findByRoomId(roomId);
       if (containers.length !== 2) {
         throw new Error(
           `Room ${roomId} must have exactly 2 containers for swap, found ${containers.length}`,
@@ -98,7 +104,7 @@ export class AtomicSwapExecutionService {
 
       // TODO: PaymentRepository.findByRoomId(roomId)
       // Fetch all payments for room; verify all payments.status = CONFIRMED
-      const payments: any[] = []; // TODO: Remove placeholder
+      const payments = await this.paymentRepository.findByRoomId(roomId);
       for (const payment of payments) {
         if (payment.status !== 'CONFIRMED') {
           throw new Error(
@@ -242,12 +248,10 @@ export class AtomicSwapExecutionService {
         // Update room.state to SWAPPED, set swapped_at timestamp
         // Expected behavior: atomic update
 
-        const swappedRoom = {
-          ...room,
+        const swappedRoom = await this.roomRepository.update(roomId, {
           state: 'SWAPPED',
           swapped_at: new Date(),
-          updated_at: new Date(),
-        };
+        });
 
         // TODO: For EACH container: ContainerRepository.update(container.id, {
         //        state: 'TRANSFERRED',
@@ -257,11 +261,24 @@ export class AtomicSwapExecutionService {
         // Update each container.state to TRANSFERRED
         // Expected behavior: atomic updates for both containers
 
+        for (const container of containers) {
+          await this.containerRepository.update(container.id, {
+            state: 'TRANSFERRED',
+            transferred_at: new Date(),
+          });
+        }
+
         // TODO: PaymentRepository.update(payment.id FOR EACH payment, {
         //        status: 'FINAL'
         //      })
         // Mark all payments status=FINAL (no further refunds possible)
         // Expected behavior: atomic updates
+
+        for (const payment of payments) {
+          await this.paymentRepository.update(payment.id, {
+            status: 'FINAL',
+          });
+        }
 
         // TODO: AuditService.logTransition()
         // Log: actor='SYSTEM', action='atomic_swap_execution', room_id=roomId, status=TRANSITION,

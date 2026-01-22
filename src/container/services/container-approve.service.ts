@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
 import { NotificationService } from '../../notification/notification.service';
+import { ContainerRepository } from '../../repositories/container.repository';
 
 interface ApproveContainerInput {
   adminId: string;
@@ -20,6 +21,7 @@ export class ContainerApproveService {
   constructor(
     private readonly auditService: AuditService,
     private readonly notificationService: NotificationService,
+    private readonly containerRepository: ContainerRepository,
   ) {}
 
   async approveContainer(input: ApproveContainerInput): Promise<ApproveContainerResult> {
@@ -47,7 +49,7 @@ export class ContainerApproveService {
 
       // TODO: ContainerRepository.findOne(containerId)
       // Verify container exists in database; throw if not found
-      const container = {} as any; // TODO: Remove placeholder after repository implementation
+      const container = await this.containerRepository.findOne(containerId);
       if (!container) {
         throw new Error(`Container ${containerId} not found`);
       }
@@ -100,12 +102,10 @@ export class ContainerApproveService {
       // Update container state to 'VALIDATED', set admin validation summary, update timestamp
       // Expected behavior: atomic update, committed to database
 
-      const approvedContainer = {
-        ...container,
+      const approvedContainer = await this.containerRepository.update(containerId, {
         state: 'VALIDATED',
         validation_summary: validationSummary,
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id=adminId, action='container_approve', container_id=containerId, status=TRANSITION,

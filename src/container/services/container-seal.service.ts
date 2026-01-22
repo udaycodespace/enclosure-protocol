@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
 import { NotificationService } from '../../notification/notification.service';
+import { RoomRepository } from '../../repositories/room.repository';
+import { ContainerRepository } from '../../repositories/container.repository';
+import { ArtifactRepository } from '../../repositories/artifact.repository';
 
 interface SealContainerInput {
   actorId: string;
@@ -19,6 +22,9 @@ export class ContainerSealService {
   constructor(
     private readonly auditService: AuditService,
     private readonly notificationService: NotificationService,
+    private readonly roomRepository: RoomRepository,
+    private readonly containerRepository: ContainerRepository,
+    private readonly artifactRepository: ArtifactRepository,
   ) {}
 
   async sealContainer(input: SealContainerInput): Promise<SealContainerResult> {
@@ -36,7 +42,7 @@ export class ContainerSealService {
 
       // TODO: ContainerRepository.findOne(containerId)
       // Verify container exists in database; throw if not found
-      const container = {} as any; // TODO: Remove placeholder after repository implementation
+      const container = await this.containerRepository.findOne(containerId);
       if (!container) {
         throw new Error(`Container ${containerId} not found`);
       }
@@ -55,14 +61,14 @@ export class ContainerSealService {
 
       // TODO: RoomRepository.findOne(container.room_id)
       // Verify parent room exists and state = IN_PROGRESS
-      const room = {} as any; // TODO: Remove placeholder after repository implementation
+      const room = await this.roomRepository.findOne(container.room_id);
       if (!room || room.state !== 'IN_PROGRESS') {
         throw new Error(`Room ${container.room_id} not found or not in IN_PROGRESS state`);
       }
 
       // TODO: ArtifactRepository.findByContainer(containerId)
       // Query all artifacts for this container; verify non-empty set
-      const artifacts: any[] = []; // TODO: Remove placeholder after repository implementation
+      const artifacts = await this.artifactRepository.findByContainer(containerId);
       if (artifacts.length === 0) {
         throw new Error(`Container ${containerId} has no artifacts`);
       }
@@ -105,11 +111,9 @@ export class ContainerSealService {
       // Update container.state to 'SEALED' and set updated_at to current timestamp
       // Expected behavior: atomic update, committed to database
 
-      const sealedContainer = {
-        ...container,
+      const sealedContainer = await this.containerRepository.update(containerId, {
         state: 'SEALED',
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id=actorId, action='container_seal', container_id=containerId, status=TRANSITION,

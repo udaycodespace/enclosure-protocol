@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
+import { RoomRepository } from '../../repositories/room.repository';
+import { ContainerRepository } from '../../repositories/container.repository';
 
 interface TransferContainerInput {
   containerId: string;
@@ -15,7 +17,11 @@ interface TransferContainerResult {
 
 @Injectable()
 export class ContainerTransferService {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly roomRepository: RoomRepository,
+    private readonly containerRepository: ContainerRepository,
+  ) {}
 
   async markTransferred(input: TransferContainerInput): Promise<TransferContainerResult> {
     const { containerId, systemActorId = 'SYSTEM' } = input;
@@ -42,7 +48,7 @@ export class ContainerTransferService {
 
       // TODO: ContainerRepository.findOne(containerId)
       // Verify container exists in database; throw if not found
-      const container = {} as any; // TODO: Remove placeholder after repository implementation
+      const container = await this.containerRepository.findOne(containerId);
       if (!container) {
         throw new Error(`Container ${containerId} not found`);
       }
@@ -57,7 +63,7 @@ export class ContainerTransferService {
 
       // TODO: RoomRepository.findOne(container.room_id) [READ-ONLY]
       // Verify parent room exists and state = SWAPPED
-      const room = {} as any; // TODO: Remove placeholder after repository implementation
+      const room = await this.roomRepository.findOne(container.room_id);
       if (!room || room.state !== 'SWAPPED') {
         throw new Error(
           `Room ${container.room_id} not found or not in SWAPPED state`,
@@ -95,12 +101,10 @@ export class ContainerTransferService {
       // Update container.state to 'TRANSFERRED', set transferred_at and updated_at to current timestamp
       // Expected behavior: atomic update, committed to database
 
-      const transferredContainer = {
-        ...container,
+      const transferredContainer = await this.containerRepository.update(containerId, {
         state: 'TRANSFERRED',
         transferred_at: new Date(),
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id='SYSTEM', action='container_transferred', container_id=containerId, status=TRANSITION,

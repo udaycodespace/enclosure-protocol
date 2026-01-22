@@ -11,6 +11,8 @@ import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { AuditService } from '../../audit/audit.service';
 import { NotificationService } from '../../notification/notification.service';
 import { ContainerRejectService } from '../../container/services/container-reject.service';
+import { RoomRepository } from '../../repositories/room.repository';
+import { ContainerRepository } from '../../repositories/container.repository';
 
 interface FailRoomInput {
   roomId: string;
@@ -32,9 +34,10 @@ export class RoomFailureService {
   constructor(
     private readonly auditService: AuditService,
     private readonly notificationService: NotificationService,
+    private readonly roomRepository: RoomRepository,
+    private readonly containerRepository: ContainerRepository,
     @Inject(forwardRef(() => ContainerRejectService))
     private readonly containerRejectService: ContainerRejectService,
-    // TODO: ContainerModule coordination via module-level DI
   ) {}
 
   async failRoom(input: FailRoomInput): Promise<FailRoomResult> {
@@ -62,7 +65,7 @@ export class RoomFailureService {
 
       // TODO: RoomRepository.findOne(roomId)
       // Verify room exists in database; throw if not found
-      const room = {} as any; // TODO: Remove placeholder after repository implementation
+      const room = await this.roomRepository.findOne(roomId);
       if (!room) {
         throw new Error(`Room ${roomId} not found`);
       }
@@ -116,13 +119,11 @@ export class RoomFailureService {
       // Update room.state to 'FAILED', set failure reason and failed_at timestamp
       // Expected behavior: atomic update, committed to database
 
-      const failedRoom = {
-        ...room,
+      const failedRoom = await this.roomRepository.update(roomId, {
         state: 'FAILED',
         failure_reason: reason,
         failed_at: new Date(),
-        updated_at: new Date(),
-      };
+      });
 
       // TODO: AuditService.logTransition()
       // Log: actor_id=actorId, action='room_failed', room_id=roomId, status=TRANSITION,
@@ -149,7 +150,7 @@ export class RoomFailureService {
 
       // TODO: ContainerRepository.findByRoomId(roomId)
       // Query all containers in this room
-      const containers: any[] = []; // TODO: Remove placeholder after repository implementation
+      const containers = await this.containerRepository.findByRoomId(roomId);
 
       // Reject both containers (creator and counterparty containers)
       for (const container of containers) {
